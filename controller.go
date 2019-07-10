@@ -18,19 +18,26 @@ import (
 // ContentHashSeed is the seed used for hashing the iptable rules.
 const ContentHashSeed = 0xDEAD
 
+// NATTable represents the nat-table in iptables
+const NATTable = "nat"
+
+// FilterTable represents the filter-table in iptables
+const FilterTable = "filter"
+
 // Controller is a controller which monitors iptables and loadbalancers and updates iptables accordingly.
 type Controller struct {
+	sync.Mutex
 	loadbalancers    map[string]Loadbalancer
-	lock             sync.Mutex
 	started          bool
 	stopCh           chan struct{}
 	ipt              *iptables.IPTables
 	mainChainName    string
 	forwardChainName string
+	tickRate         int
 }
 
 // NewController creates a new Controller instance.
-func NewController() (*Controller, error) {
+func NewController(tickRate int) (*Controller, error) {
 	ipt, err := iptables.New()
 	if err != nil {
 		return nil, fmt.Errorf("couldn't init iptables, see: %v", err)
@@ -42,13 +49,14 @@ func NewController() (*Controller, error) {
 		stopCh:           make(chan struct{}),
 		mainChainName:    "iptableslb-prerouting",
 		forwardChainName: "iptableslb-forward",
+		tickRate:         tickRate,
 	}, nil
 }
 
 // UpsertLoadbalancer inserts or updates the passed loadbalancer in the controller.
 func (c *Controller) UpsertLoadbalancer(lb *Loadbalancer) {
-	c.lock.Lock()
-	defer c.lock.Unlock()
+	c.Lock()
+	defer c.Unlock()
 
 	if len(lb.Outputs) == 0 {
 		// empty loadbalancer? kill it!
@@ -64,8 +72,8 @@ func (c *Controller) UpsertLoadbalancer(lb *Loadbalancer) {
 
 // DeleteLoadbalancer removes the passed loadbalancer from the controller.
 func (c *Controller) DeleteLoadbalancer(lb *Loadbalancer) {
-	c.lock.Lock()
-	defer c.lock.Unlock()
+	c.Lock()
+	defer c.Unlock()
 
 	delete(c.loadbalancers, lb.Key())
 }
@@ -91,7 +99,7 @@ func (c *Controller) Run() {
 	go (func() {
 		glog.Infof("Controller started.")
 
-		mainLoopStopCh := c.loop("MainLoop", 1*time.Second, c.sync)
+		mainLoopStopCh := c.loop("MainLoop", time.Duration(c.tickRate)*time.Second, c.sync)
 
 		<-c.stopCh
 
@@ -137,8 +145,8 @@ func (c *Controller) loop(name string, waitTime time.Duration, cb func()) chan s
 type Task func(allChains []string, chainIDs []ChainID, lbToChains map[string][]ChainID)
 
 func (c *Controller) sync() {
-	c.lock.Lock()
-	defer c.lock.Unlock()
+	c.Lock()
+	defer c.Unlock()
 
 	tasks := []Task{
 		c.deleteChainsStuckInCreation,
@@ -159,7 +167,7 @@ func (c *Controller) sync() {
 
 		glog.V(5).Infof("starting %s", taskName)
 
-		allChains, err := c.ipt.ListChains("nat")
+		allChains, err := c.ipt.ListChains(NATTable)
 		if err != nil {
 			glog.Errorf("couldn't list all chains in nat table, see: %v", err)
 			continue
@@ -186,7 +194,7 @@ func (c *Controller) refreshLoadbalancersWithBrokenChains(allChains []string, ch
 		}
 
 		for _, chain := range chains {
-			rules, err := c.ipt.List("nat", chain.String())
+			rules, err := c.ipt.List(NATTable, chain.String())
 			if err != nil {
 				glog.Errorf("couldn't retrieve rules in chain `%s`, see: %v", chain.String(), err)
 				continue
@@ -257,7 +265,7 @@ func (c *Controller) getLatestChainID(chainIDs []ChainID) ChainID {
 
 func (c *Controller) ensureMainChainEntries(allChains []string, chainIDs []ChainID, lbToChains map[string][]ChainID) {
 	// For every chain, check if a corresponding entry in the main chain exists, if not, create
-	rules, err := c.ipt.List("nat", c.mainChainName)
+	rules, err := c.ipt.List(NATTable, c.mainChainName)
 	if err != nil {
 		glog.Errorf("couldn't retrieve rules in mainChain `%s`, see: %v", c.mainChainName, err)
 		return
@@ -284,7 +292,7 @@ func (c *Controller) ensureMainChainEntries(allChains []string, chainIDs []Chain
 			continue
 		}
 
-		err = c.ipt.Append("nat", c.mainChainName, strings.Split(rule, " ")...)
+		err = c.ipt.Append(NATTable, c.mainChainName, strings.Split(rule, " ")...)
 		if err != nil {
 			glog.Errorf("couldn't create mainChain entry for lb `%s` to chain `%s`, see: %v", lbKey, latest.String(), err)
 			continue
@@ -324,8 +332,8 @@ func (c *Controller) allStringsInString(all []string, str string) bool {
 }
 
 func (c *Controller) deleteObsoleteChains(allChains []string, chainIDs []ChainID, lbToChains map[string][]ChainID) {
-	// Alle chains die nicht in der MainChain referenziert werden löschen
-	rules, err := c.ipt.List("nat", c.mainChainName)
+	// Remove all chains which ain't referenced in mainchain
+	rules, err := c.ipt.List(NATTable, c.mainChainName)
 	if err != nil {
 		glog.Errorf("couldn't retrieve rules in mainChain `%s`, see: %v", c.mainChainName, err)
 		return
@@ -370,9 +378,9 @@ func (c *Controller) chainIDsContainID(ids []ChainID, id ChainID) bool {
 }
 
 func (c *Controller) deleteObsoleteMainChainEntries(allChains []string, chainIDs []ChainID, lbToChains map[string][]ChainID) {
-	// Mappe loadbalancer -> chain, lösche alle rules pro lb außer dem aktuellsten
-	// wenn der lb gar nicht mehr bei uns existiert auch löschen (aka check auf c.loadbalancers)
-	rules, err := c.ipt.List("nat", c.mainChainName)
+	// Map loadbalancer to chain, delete all rules except the latest
+	// in case lb isn't in config at all, remove it
+	rules, err := c.ipt.List(NATTable, c.mainChainName)
 	if err != nil {
 		glog.Errorf("couldn't retrieve rules in mainChain `%s`, see: %v", c.mainChainName, err)
 		return
@@ -581,7 +589,7 @@ func (c *Controller) createChainForLB(lb *Loadbalancer) (ChainID, error) {
 	}
 
 	chain := lb.GetChainID(ChainCreating, 0)
-	err := c.ipt.NewChain("nat", chain.String())
+	err := c.ipt.NewChain(NATTable, chain.String())
 	if err != nil {
 		return ChainID{}, fmt.Errorf("couldn't create chain `%s` for lb `%s`, see: %v", chain.String(), lb.Key(), err)
 	}
@@ -594,7 +602,7 @@ func (c *Controller) createChainForLB(lb *Loadbalancer) (ChainID, error) {
 		output := lb.Outputs[i-1]
 
 		rule := fmt.Sprintf("-p %s -d %s --dport %d -m statistic --mode nth --every %d --packet 0 -j DNAT --to-destination %s", lb.Protocol.String(), lb.Input.IP.String(), lb.Input.Port, i, output.String())
-		err = c.ipt.Append("nat", chain.String(), strings.Split(rule, " ")...)
+		err = c.ipt.Append(NATTable, chain.String(), strings.Split(rule, " ")...)
 		if err != nil {
 			return ChainID{}, fmt.Errorf("couldn't create rule `%s` in chain `%s` for output `%s` lb `%s`, see: %v", rule, chain.String(), output.String(), lb.Key(), err)
 		}
@@ -604,7 +612,7 @@ func (c *Controller) createChainForLB(lb *Loadbalancer) (ChainID, error) {
 
 	// Final output always matches everything not matched yet.
 	rule := fmt.Sprintf("-p %s -d %s --dport %d -j DNAT --to-destination %s", lb.Protocol.String(), lb.Input.IP.String(), lb.Input.Port, lb.Outputs[0].String())
-	err = c.ipt.Append("nat", chain.String(), strings.Split(rule, " ")...)
+	err = c.ipt.Append(NATTable, chain.String(), strings.Split(rule, " ")...)
 	if err != nil {
 		return ChainID{}, fmt.Errorf("couldn't create rule `%s` in chain `%s` for output `%s` lb `%s`, see: %v", rule, chain.String(), lb.Outputs[0].String(), lb.Key(), err)
 	}
@@ -612,7 +620,7 @@ func (c *Controller) createChainForLB(lb *Loadbalancer) (ChainID, error) {
 	rules = append(rules, rule)
 
 	// Get rules from remote for hashing, since iptables adds some kungfu, changes arg order, etc.
-	rules, err = c.ipt.List("nat", chain.String())
+	rules, err = c.ipt.List(NATTable, chain.String())
 	if err != nil {
 		return ChainID{}, fmt.Errorf("couldn't retrieve rules in chain `%s`, see: %v", chain.String(), err)
 
@@ -620,7 +628,7 @@ func (c *Controller) createChainForLB(lb *Loadbalancer) (ChainID, error) {
 
 	newChainID := lb.GetChainID(ChainCreated, c.calculateHashForRules(rules))
 
-	err = c.ipt.RenameChain("nat", chain.String(), newChainID.String())
+	err = c.ipt.RenameChain(NATTable, chain.String(), newChainID.String())
 	if err != nil {
 		return ChainID{}, fmt.Errorf("couldn't rename chain `%s` (creating) to `%s` (created) for lb `%s`, see: %v", chain.String(), newChainID.String(), lb.Key(), err)
 	}
@@ -634,7 +642,7 @@ func (c *Controller) getRuleStringForMainChainEntryToChain(chain ChainID) string
 
 func (c *Controller) removeMainChainEntryToChain(chain ChainID) error {
 	rule := c.getRuleStringForMainChainEntryToChain(chain)
-	err := c.ipt.Delete("nat", c.mainChainName, strings.Split(rule, " ")...)
+	err := c.ipt.Delete(NATTable, c.mainChainName, strings.Split(rule, " ")...)
 	if err != nil {
 		// FIXME:  ignore "rule not exists" errors
 		return fmt.Errorf("couldn't remove rule `%s` for lb `%s` from main chain, see: %v", rule, chain.AsLoadbalancerKey(), err)
@@ -683,12 +691,12 @@ func (c *Controller) findChainIDs(chains []string) []ChainID {
 func (c *Controller) deleteChain(chainID ChainID) error {
 	chainName := chainID.String()
 
-	err := c.ipt.ClearChain("nat", chainName)
+	err := c.ipt.ClearChain(NATTable, chainName)
 	if err != nil {
 		return fmt.Errorf("couldn't flush chain `%s` (%s), see: %v", chainName, chainID.AsLoadbalancerKey(), err)
 	}
 
-	err = c.ipt.DeleteChain("nat", chainName)
+	err = c.ipt.DeleteChain(NATTable, chainName)
 	if err != nil {
 		return fmt.Errorf("couldn't delete chain `%s` (%s), see: %v", chainName, chainID.AsLoadbalancerKey(), err)
 	}
@@ -721,7 +729,7 @@ func (c *Controller) ensureMainChainExists(allChains []string, chainIDs []ChainI
 
 	if !found {
 		glog.V(4).Infof("creating mainchain...")
-		err := c.ipt.NewChain("nat", c.mainChainName)
+		err := c.ipt.NewChain(NATTable, c.mainChainName)
 		if err != nil {
 			glog.Errorf("couldn't create mainchain, see: %v", err)
 			return
@@ -731,7 +739,7 @@ func (c *Controller) ensureMainChainExists(allChains []string, chainIDs []ChainI
 }
 
 func (c *Controller) ensureForwardChainExists(allChains []string, chainIDs []ChainID, lbToChains map[string][]ChainID) {
-	allChains, err := c.ipt.ListChains("filter")
+	allChains, err := c.ipt.ListChains(FilterTable)
 	if err != nil {
 		glog.Errorf("couldn't list all chains in filter table, see: %v", err)
 		return
@@ -748,7 +756,7 @@ func (c *Controller) ensureForwardChainExists(allChains []string, chainIDs []Cha
 
 	if !found {
 		glog.V(4).Infof("creating forwardChain...")
-		err := c.ipt.NewChain("filter", c.forwardChainName)
+		err := c.ipt.NewChain(FilterTable, c.forwardChainName)
 		if err != nil {
 			glog.Errorf("couldn't create forwardChain, see: %v", err)
 			return
@@ -769,7 +777,7 @@ func (c *Controller) getDstForwardRuleStringForEndpointAndProt(endpoint Endpoint
 
 func (c *Controller) ensureForwardChainEntries(allChains []string, chainIDs []ChainID, lbToChains map[string][]ChainID) {
 	// Iterate over all lbs (in config) and ensure forward entries for every output
-	rules, err := c.ipt.List("filter", c.forwardChainName)
+	rules, err := c.ipt.List(FilterTable, c.forwardChainName)
 	if err != nil {
 		glog.Errorf("couldn't retrieve rules in forwardChain `%s`, see: %v", c.forwardChainName, err)
 		return
@@ -779,7 +787,7 @@ func (c *Controller) ensureForwardChainEntries(allChains []string, chainIDs []Ch
 		for _, output := range lb.Outputs {
 			srcRule := c.getSrcForwardRuleStringForEndpointAndProt(output, lb.Protocol)
 			if !c.rulesContainRule(rules, srcRule) {
-				err = c.ipt.Append("filter", c.forwardChainName, strings.Split(srcRule, " ")...)
+				err = c.ipt.Append(FilterTable, c.forwardChainName, strings.Split(srcRule, " ")...)
 				if err != nil {
 					glog.Errorf("couldn't create source forward rule for output `%s` of lb `%s`, see: %v", output.String(), lbKey, err)
 				} else {
@@ -789,7 +797,7 @@ func (c *Controller) ensureForwardChainEntries(allChains []string, chainIDs []Ch
 
 			dstRule := c.getDstForwardRuleStringForEndpointAndProt(output, lb.Protocol)
 			if !c.rulesContainRule(rules, dstRule) {
-				err = c.ipt.Append("filter", c.forwardChainName, strings.Split(dstRule, " ")...)
+				err = c.ipt.Append(FilterTable, c.forwardChainName, strings.Split(dstRule, " ")...)
 				if err != nil {
 					glog.Errorf("couldn't create destination forward rule for output `%s` of lb `%s`, see: %v", output.String(), lbKey, err)
 				} else {
@@ -802,7 +810,7 @@ func (c *Controller) ensureForwardChainEntries(allChains []string, chainIDs []Ch
 
 func (c *Controller) deleteObsoleteForwardChainEntries(allChains []string, chainIDs []ChainID, lbToChains map[string][]ChainID) {
 	// Delete everything not referenced by any NAT chain (so in case we couldnt create new outputs, the old ones (not in config anymore) can still accept traffic)
-	forwardRules, err := c.ipt.List("filter", c.forwardChainName)
+	forwardRules, err := c.ipt.List(FilterTable, c.forwardChainName)
 	if err != nil {
 		glog.Errorf("couldn't retrieve rules in forwardChain `%s`, see: %v", c.forwardChainName, err)
 		return
@@ -811,7 +819,7 @@ func (c *Controller) deleteObsoleteForwardChainEntries(allChains []string, chain
 	referencedEndpoints := make(map[string]struct{})
 
 	for _, chainID := range chainIDs {
-		rulesInChain, err := c.ipt.List("nat", chainID.String())
+		rulesInChain, err := c.ipt.List(NATTable, chainID.String())
 		if err != nil {
 			glog.Errorf("WILL NOT DELETE ANY OBSOLETE FORWARD CHAIN ENTRIES, see: couldn't retrieve rules in chain `%s`, see: %v", chainID.String(), err)
 			return
@@ -851,7 +859,7 @@ func (c *Controller) deleteObsoleteForwardChainEntries(allChains []string, chain
 			// Fuckly hack since iptables gives us the mask, but doesnt like it when we give it...
 			rule = strings.ReplaceAll(rule, dest.IP.String()+"/32", dest.IP.String())
 
-			err := c.ipt.Delete("filter", c.forwardChainName, strings.Split(rule, " ")...)
+			err := c.ipt.Delete(FilterTable, c.forwardChainName, strings.Split(rule, " ")...)
 			if err != nil {
 				glog.Errorf("couldn't delete obsolete forward rule `%s`, see: %v", rule, err)
 				continue

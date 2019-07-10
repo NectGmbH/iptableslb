@@ -1,7 +1,7 @@
 package main
 
 import (
-    //"fmt"
+    "fmt"
     "gotest.tools/assert"
     "net"
     "net/http"
@@ -31,6 +31,7 @@ func TestCheckHealthCorrect(t *testing.T) {
         net.IPv4(0, 0, 0, 0),
         0,
         NewMockHealthCheckProvider(mockFunc),
+        time.Second,
         60*time.Second,
         1*time.Second)
 
@@ -44,7 +45,11 @@ func TestCheckHealthCorrect(t *testing.T) {
         t, h.LastCheck, timeBefore, time.Now(), "LastCheck date incorrect")
 
     assert.Equal(t, h.LastCheck, h.LastTimeHealthy)
-    assert.Equal(t, h.Retention, defaultRetention)
+
+    if h.Retention < defaultRetention || h.Retention > time.Duration(1.5*float64(defaultRetention)) {
+        t.Fatalf("expected retention to be around 1s, but its %s", h.Retention.String())
+    }
+
     assert.Equal(t, h.LastMessage, "message")
 
     timeBefore = time.Now()
@@ -56,7 +61,10 @@ func TestCheckHealthCorrect(t *testing.T) {
         t, h.LastCheck, timeBefore, time.Now(), "LastCheck date incorrect")
 
     assert.Equal(t, h.LastCheck, h.LastTimeHealthy)
-    assert.Equal(t, h.Retention, defaultRetention)
+
+    if h.Retention < defaultRetention || h.Retention > time.Duration(1.5*float64(defaultRetention)) {
+        t.Fatalf("expected retention to be around 1s, but its %s", h.Retention.String())
+    }
 }
 
 func TestCheckHealthIncorrectRetention(t *testing.T) {
@@ -68,6 +76,7 @@ func TestCheckHealthIncorrectRetention(t *testing.T) {
         net.IPv4(0, 0, 0, 0),
         0,
         NewMockHealthCheckProvider(mockFunc),
+        time.Second,
         60*time.Second,
         1*time.Second)
 
@@ -81,7 +90,11 @@ func TestCheckHealthIncorrectRetention(t *testing.T) {
         t, h.LastCheck, timeBefore, time.Now(), "LastCheck date incorrect")
 
     assertTimeBefore(t, h.LastTimeHealthy, timeBefore, "LastTimeHealthy")
-    assert.Equal(t, h.Retention, defaultRetention*2)
+
+    if h.Retention < 2*defaultRetention || h.Retention > time.Duration(2.5*float64(defaultRetention)) {
+        t.Fatalf("expected retention to be around 2s, but its %s", h.Retention.String())
+    }
+
     assert.Equal(t, h.LastMessage, "message")
 
     timeBefore = time.Now()
@@ -92,7 +105,9 @@ func TestCheckHealthIncorrectRetention(t *testing.T) {
     assertTimeBetweenTimes(
         t, h.LastCheck, timeBefore, time.Now(), "LastCheck date incorrect")
 
-    assert.Equal(t, h.Retention, defaultRetention*3)
+    if h.Retention < 3*defaultRetention || h.Retention > 4*defaultRetention {
+        t.Fatalf("expected retention to be around 3.5s, but its %s", h.Retention.String())
+    }
 }
 
 func TestCheckHealthTCPCorrect(t *testing.T) {
@@ -104,6 +119,7 @@ func TestCheckHealthTCPCorrect(t *testing.T) {
         net.IPv4(127, 0, 0, 1),
         listener.Addr().(*net.TCPAddr).Port,
         DefaultTCPHealthCheckProvider,
+        time.Second,
         60*time.Second,
         1*time.Second)
 
@@ -117,6 +133,7 @@ func TestCheckHealthTCPIncorrect(t *testing.T) {
         net.IPv4(127, 0, 0, 1),
         31337,
         DefaultTCPHealthCheckProvider,
+        time.Second,
         60*time.Second,
         1*time.Second)
 
@@ -135,6 +152,7 @@ func TestCheckHealthHTTPCorrect(t *testing.T) {
         net.IPv4(127, 0, 0, 1),
         port,
         DefaultHTTPHealthCheckProvider,
+        time.Second,
         60*time.Second,
         1*time.Second)
 
@@ -161,6 +179,7 @@ func TestCheckHealthHTTPIncorrect(t *testing.T) {
         net.IPv4(127, 0, 0, 1),
         port,
         DefaultHTTPHealthCheckProvider,
+        time.Second,
         60*time.Second,
         1*time.Second)
 
@@ -186,6 +205,7 @@ func TestCheckHealthHTTPTimeout(t *testing.T) {
         net.IPv4(127, 0, 0, 1),
         listener.Addr().(*net.TCPAddr).Port,
         DefaultHTTPHealthCheckProvider,
+        time.Second,
         60*time.Second,
         1*time.Second)
 
@@ -207,7 +227,7 @@ func TestCheckHealthHTTPTimeout(t *testing.T) {
     assert.Assert(t, !h.Healthy)
 }
 
-/*func TestMonitor(t *testing.T) {
+func TestMonitor(t *testing.T) {
     i := 0
 
     mockFunc := func(h *HealthCheck) (string, bool) {
@@ -219,6 +239,7 @@ func TestCheckHealthHTTPTimeout(t *testing.T) {
         net.IPv4(42, 42, 42, 42),
         1337,
         NewMockHealthCheckProvider(mockFunc),
+        time.Second,
         60*time.Second,
         1*time.Second)
 
@@ -240,15 +261,17 @@ func TestCheckHealthHTTPTimeout(t *testing.T) {
         timeDiff := timeAfter.Sub(timeBefore).Seconds()
 
         if i2 >= 5 {
-            assert.Equal(t, h.Retention, time.Duration(i2-3)*defaultRetention)
-            assertLowerThan(t, timeDiff, float64(i2-4)+0.5, "retention low")
-            assertBiggerThan(t, timeDiff, 0.5+float64(i2-5), "retention big")
+            assertLowerThan(t, timeDiff, float64(i2-4)+1, "retention low")
+            assertBiggerThan(t, timeDiff, 1+float64(i2-5), "retention big")
         } else {
-            assert.Equal(t, h.Retention, defaultRetention)
+            if h.Retention < defaultRetention || h.Retention > time.Duration(1.5*float64(defaultRetention)) {
+                t.Fatalf("expected retention to be around 1s, but its %s", h.Retention.String())
+            }
+
             assertLowerThan(t, timeDiff, 1.5, "retention low")
         }
     }
-}*/
+}
 
 func assertLowerThan(t *testing.T, a float64, b float64, msg string) {
     if a >= b {

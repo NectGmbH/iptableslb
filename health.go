@@ -17,16 +17,17 @@ var DefaultTCPHealthCheckProvider = &TCPHealthCheckProvider{}
 var DefaultHTTPHealthCheckProvider = &HTTPHealthCheckProvider{}
 
 type HealthCheck struct {
-    IP              net.IP
-    Port            int
-    Provider        HealthCheckProvider
-    Healthy         bool
-    LastTimeHealthy time.Time
-    LastCheck       time.Time
-    LastMessage     string
-    Retention       time.Duration
-    MaxRetention    time.Duration
-    MaxResponseTime time.Duration
+    IP               net.IP
+    Port             int
+    Provider         HealthCheckProvider
+    Healthy          bool
+    LastTimeHealthy  time.Time
+    LastCheck        time.Time
+    LastMessage      string
+    PlannedRetention time.Duration
+    Retention        time.Duration
+    MaxRetention     time.Duration
+    MaxResponseTime  time.Duration
 }
 
 type HealthCheckStatus struct {
@@ -55,17 +56,19 @@ func NewHealthCheck(
     ip net.IP,
     port int,
     provider HealthCheckProvider,
+    plannedRetention time.Duration,
     maxRetention time.Duration,
     maxResponseTime time.Duration,
 ) *HealthCheck {
     h := &HealthCheck{
-        IP:              ip,
-        Port:            port,
-        Provider:        provider,
-        Healthy:         false,
-        Retention:       defaultRetention,
-        MaxRetention:    maxRetention,
-        MaxResponseTime: maxResponseTime,
+        IP:               ip,
+        Port:             port,
+        Provider:         provider,
+        Healthy:          false,
+        PlannedRetention: plannedRetention,
+        Retention:        plannedRetention,
+        MaxRetention:     maxRetention,
+        MaxResponseTime:  maxResponseTime,
     }
 
     return h
@@ -79,6 +82,9 @@ func (h *HealthCheck) Monitor(stopChan chan struct{}) chan HealthCheckStatus {
     notificationChan := make(chan HealthCheckStatus)
 
     go (func() {
+        // Add some random delay so not all healthchecks happen at the very same second
+        time.Sleep(time.Duration(rand.Float64() * float64(time.Second)))
+
         glog.V(5).Infof("Starting monitoring %s:%d", h.IP, h.Port)
 
         for {
@@ -114,14 +120,14 @@ func (h *HealthCheck) CheckHealth() {
     h.LastMessage, h.Healthy = h.Provider.CheckHealth(h)
 
     // Add some randomness so not all checks get executed at the same time
-    retention := defaultRetention + time.Duration((rand.Float64()/2)*float64(time.Second))
+    retention := h.PlannedRetention + time.Duration((rand.Float64()/2)*float64(time.Second))
 
     h.LastCheck = time.Now()
     if h.Healthy {
         h.LastTimeHealthy = h.LastCheck
         h.Retention = retention
     } else if h.Retention < h.MaxRetention {
-        h.Retention += retention
+        h.Retention += defaultRetention
     }
 }
 

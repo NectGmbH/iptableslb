@@ -5,3 +5,5 @@ RUN apk add iptables
 
 COPY ./iptableslb /usr/bin/iptableslb
 COPY ./iptableslb.test /usr/bin/iptableslb.test
+
+ENTRYPOINT [ "/usr/bin/iptableslb" ]

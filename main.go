@@ -51,7 +51,7 @@ func mergeHealthFeeds(cs ...chan LBHealthCheckStatus) chan LBHealthCheckStatus {
 	return out
 }
 
-func setupHealthChecks(prot Protocol, in Endpoint, outs []Endpoint, healthProvider HealthCheckProvider) (chan struct{}, chan LBHealthCheckStatus) {
+func setupHealthChecks(prot Protocol, in Endpoint, outs []Endpoint, healthProvider HealthCheckProvider, tickRate int) (chan struct{}, chan LBHealthCheckStatus) {
 	stopChan := make(chan struct{}, 0)
 	stopChans := make([]chan struct{}, 0)
 	healthFeed := make(chan LBHealthCheckStatus)
@@ -62,6 +62,7 @@ func setupHealthChecks(prot Protocol, in Endpoint, outs []Endpoint, healthProvid
 			endpoint.IP,
 			int(endpoint.Port),
 			healthProvider,
+			time.Duration(tickRate)*time.Second,
 			60*time.Second,
 			1*time.Second)
 
@@ -104,7 +105,9 @@ func main() {
 	var inFlags sliceFlags
 	var outFlags sliceFlags
 	var healthFlags sliceFlags
+	var tickRate int
 
+	flag.IntVar(&tickRate, "t", 1, "Tick rate for the controller in seconds.")
 	flag.Var(&inFlags, "in", "Input for the lb, e.g. \"tcp://192.168.0.1:80\"")
 	flag.Var(&outFlags, "out", "Outputs for the lb defined in the lasdt in parameter, e.g. \"192.168.2.1:8080,192.168.2.2-255:8080\"")
 	flag.Var(&healthFlags, "h", "HealthCheck which should be used, available: http, tcp, none")
@@ -119,7 +122,7 @@ func main() {
 		glog.Fatalf("didn't specify any loadbalancers")
 	}
 
-	ctrl, err := NewController()
+	ctrl, err := NewController(tickRate)
 	if err != nil {
 		glog.Fatalf("Controller couldn't start, see: %v", err)
 	}
@@ -156,7 +159,7 @@ func main() {
 
 		lb := NewLoadbalancer(prot, inEndpoint, outEndpoints...)
 		loadbalancers[lb.Key()] = lb
-		stopCh, statusCh := setupHealthChecks(prot, inEndpoint, outEndpoints, healthProvider)
+		stopCh, statusCh := setupHealthChecks(prot, inEndpoint, outEndpoints, healthProvider, tickRate)
 		stopChs = append(stopChs, stopCh)
 		statusChs = append(statusChs, statusCh)
 	}
@@ -189,8 +192,8 @@ func main() {
 		}
 	})()
 
-	// Let's wait a sec so we get up to date health informations before we start the controller
-	time.Sleep(2 * time.Second)
+	// Let's wait some sec so we get up to date health informations before we start the controller
+	time.Sleep(5 * time.Second)
 
 	ctrl.Run()
 
