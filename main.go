@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/NectGmbH/health"
 	"github.com/golang/glog"
 )
 
@@ -24,7 +25,7 @@ func (i *sliceFlags) Set(value string) error {
 
 // LBHealthCheckStatus contains the status update of one output for a specific loadbalancer
 type LBHealthCheckStatus struct {
-	HealthCheckStatus
+	health.HealthCheckStatus
 	LBKey string
 }
 
@@ -51,14 +52,14 @@ func mergeHealthFeeds(cs ...chan LBHealthCheckStatus) chan LBHealthCheckStatus {
 	return out
 }
 
-func setupHealthChecks(prot Protocol, in Endpoint, outs []Endpoint, healthProvider HealthCheckProvider, tickRate int) (chan struct{}, chan LBHealthCheckStatus) {
+func setupHealthChecks(prot Protocol, in Endpoint, outs []Endpoint, healthProvider health.HealthCheckProvider, tickRate int) (chan struct{}, chan LBHealthCheckStatus) {
 	stopChan := make(chan struct{}, 0)
 	stopChans := make([]chan struct{}, 0)
 	healthFeed := make(chan LBHealthCheckStatus)
 	lbKey := GetLoadbalancerKey(prot, in)
 
 	for _, endpoint := range outs {
-		h := NewHealthCheck(
+		h := health.NewHealthCheck(
 			endpoint.IP,
 			int(endpoint.Port),
 			healthProvider,
@@ -134,7 +135,7 @@ func main() {
 	for i := 0; i < len(inFlags); i++ {
 		in := inFlags[i]
 		out := outFlags[i]
-		health := healthFlags[i]
+		healthFlag := healthFlags[i]
 
 		prot, inEndpoint, err := TryParseProtocolEndpoint(in)
 		if err != nil {
@@ -146,15 +147,9 @@ func main() {
 			glog.Fatalf("couldn't parse endpoints from `%s`, see: %v", out, err)
 		}
 
-		var healthProvider HealthCheckProvider
-		if health == "none" {
-			healthProvider = DefaultNoneHealthCheckProvider
-		} else if health == "tcp" {
-			healthProvider = DefaultTCPHealthCheckProvider
-		} else if health == "http" {
-			healthProvider = DefaultHTTPHealthCheckProvider
-		} else {
-			glog.Fatalf("unknown health check protocol `%s` use either \"none\", \"tcp\" or \"http\".", health)
+		healthProvider, err := health.GetHealthCheckProvider(healthFlag)
+		if err != nil {
+			glog.Fatalf("couldn't setup health provider `%s`, see: %v", healthFlag, err)
 		}
 
 		lb := NewLoadbalancer(prot, inEndpoint, outEndpoints...)
@@ -177,7 +172,7 @@ func main() {
 			if status.DidChange {
 				glog.Info(status.String())
 
-				endpoint := status.GetEndpoint()
+				endpoint := Endpoint{IP: status.IP, Port: uint16(status.Port)}
 
 				if status.Healthy {
 					lb.Outputs = EndpointsAppendUnique(lb.Outputs, endpoint)

@@ -1,3 +1,5 @@
+github.com/NectGmbH/health v0.0.0-20190712123504-e59c70a573e1 h1:bt9MPhwLvL08GNyDe7mtafAQkq0LQw7AzBrsnhpeEVE=
+github.com/NectGmbH/health v0.0.0-20190712123504-e59c70a573e1/go.mod h1:BtNyEjnaU0wH3jjv/+Z1Yen59BVLMidvzTyJuUm7eFw=
 github.com/coreos/go-iptables v0.4.1 h1:TyEMaK2xD/EcB0385QcvX/OvI2XI7s4SJEI2EhZFfEU=
 github.com/coreos/go-iptables v0.4.1/go.mod h1:/mVI274lEDI2ns62jHCDnCyBF9Iwsmekav8Dbxlm1MU=
 github.com/golang/glog v0.0.0-20160126235308-23def4e6c14b h1:VKtxabqXZkF25pY9ekfRL6a582T4P37/31XEstQ5p58=
