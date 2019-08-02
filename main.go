@@ -2,6 +2,8 @@ package main
 
 import (
 	"flag"
+	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -106,13 +108,14 @@ func main() {
 	var inFlags sliceFlags
 	var outFlags sliceFlags
 	var healthFlags sliceFlags
+	var metricsPort int
 	var tickRate int
 
+	flag.IntVar(&metricsPort, "p", 9080, "port to listen on for metrics endpoint")
 	flag.IntVar(&tickRate, "t", 1, "Tick rate for the controller in seconds.")
 	flag.Var(&inFlags, "in", "Input for the lb, e.g. \"tcp://192.168.0.1:80\"")
-	flag.Var(&outFlags, "out", "Outputs for the lb defined in the lasdt in parameter, e.g. \"192.168.2.1:8080,192.168.2.2-255:8080\"")
+	flag.Var(&outFlags, "out", "Outputs for the lb defined in the \"-in\" parameter, e.g. \"192.168.2.1:8080,192.168.2.2-255:8080\"")
 	flag.Var(&healthFlags, "h", "HealthCheck which should be used, available: http, tcp, none")
-
 	flag.Parse()
 
 	if len(inFlags) != len(outFlags) || len(inFlags) != len(healthFlags) {
@@ -123,7 +126,15 @@ func main() {
 		glog.Fatalf("didn't specify any loadbalancers")
 	}
 
-	ctrl, err := NewController(tickRate)
+	metrics := &Metrics{}
+	err := metrics.Init()
+	if err != nil {
+		glog.Fatalf("couldn't set up metrics endpoint, see: %v", err)
+	}
+
+	metrics.LBTotal.Add(float64(len(inFlags)))
+
+	ctrl, err := NewController(tickRate, metrics)
 	if err != nil {
 		glog.Fatalf("Controller couldn't start, see: %v", err)
 	}
@@ -158,6 +169,11 @@ func main() {
 		stopChs = append(stopChs, stopCh)
 		statusChs = append(statusChs, statusCh)
 	}
+
+	go (func() {
+		err := http.ListenAndServe(fmt.Sprintf(":%d", metricsPort), nil)
+		glog.Fatalf("http server stopped, see: %v", err)
+	})()
 
 	statusUpdated := mergeHealthFeeds(statusChs...)
 

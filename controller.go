@@ -34,10 +34,11 @@ type Controller struct {
 	mainChainName    string
 	forwardChainName string
 	tickRate         int
+	metrics          *Metrics
 }
 
 // NewController creates a new Controller instance.
-func NewController(tickRate int) (*Controller, error) {
+func NewController(tickRate int, metrics *Metrics) (*Controller, error) {
 	ipt, err := iptables.New()
 	if err != nil {
 		return nil, fmt.Errorf("couldn't init iptables, see: %v", err)
@@ -50,6 +51,7 @@ func NewController(tickRate int) (*Controller, error) {
 		mainChainName:    "iptableslb-prerouting",
 		forwardChainName: "iptableslb-forward",
 		tickRate:         tickRate,
+		metrics:          metrics,
 	}, nil
 }
 
@@ -76,6 +78,12 @@ func (c *Controller) DeleteLoadbalancer(lb *Loadbalancer) {
 	defer c.Unlock()
 
 	delete(c.loadbalancers, lb.Key())
+}
+
+func (c *Controller) countError() {
+	if c.metrics != nil {
+		c.metrics.ErrorsTotal.Inc()
+	}
 }
 
 // Stop stops the controller
@@ -169,6 +177,7 @@ func (c *Controller) sync() {
 
 		allChains, err := c.ipt.ListChains(NATTable)
 		if err != nil {
+			c.countError()
 			glog.Errorf("couldn't list all chains in nat table, see: %v", err)
 			continue
 		}
@@ -179,6 +188,18 @@ func (c *Controller) sync() {
 		t(allChains, chainIDs, lbToChains)
 
 		glog.V(5).Infof("finished %s", taskName)
+	}
+
+	if c.metrics != nil {
+		c.updateLBMetrics()
+	}
+}
+
+func (c *Controller) updateLBMetrics() {
+	c.metrics.LBHealthy.Set(float64(len(c.loadbalancers)))
+
+	for key, lb := range c.loadbalancers {
+		c.metrics.LBHealthyEndpoints.WithLabelValues(key).Set(float64(len(lb.Outputs)))
 	}
 }
 
@@ -197,6 +218,7 @@ func (c *Controller) refreshLoadbalancersWithBrokenChains(allChains []string, ch
 			rules, err := c.ipt.List(NATTable, chain.String())
 			if err != nil {
 				glog.Errorf("couldn't retrieve rules in chain `%s`, see: %v", chain.String(), err)
+				c.countError()
 				continue
 			}
 
@@ -235,6 +257,7 @@ func (c *Controller) ensureChains(allChains []string, chainIDs []ChainID, lbToCh
 		_, err := c.createChainForLB(&lb)
 		if err != nil {
 			glog.Errorf("couldn't create chain for lb `%s`, see: %v", lbKey, err)
+			c.countError()
 		}
 	}
 }
@@ -295,6 +318,7 @@ func (c *Controller) ensureMainChainEntries(allChains []string, chainIDs []Chain
 		err = c.ipt.Append(NATTable, c.mainChainName, strings.Split(rule, " ")...)
 		if err != nil {
 			glog.Errorf("couldn't create mainChain entry for lb `%s` to chain `%s`, see: %v", lbKey, latest.String(), err)
+			c.countError()
 			continue
 		}
 
@@ -336,6 +360,7 @@ func (c *Controller) deleteObsoleteChains(allChains []string, chainIDs []ChainID
 	rules, err := c.ipt.List(NATTable, c.mainChainName)
 	if err != nil {
 		glog.Errorf("couldn't retrieve rules in mainChain `%s`, see: %v", c.mainChainName, err)
+		c.countError()
 		return
 	}
 
@@ -348,6 +373,7 @@ func (c *Controller) deleteObsoleteChains(allChains []string, chainIDs []ChainID
 		chainID, err := c.getChainIDForMainChainRule(rule)
 		if err != nil {
 			glog.Errorf("couldn't get chainid for mainchain rule `%s`, see: %v", rule, err)
+			c.countError()
 			continue
 		}
 
@@ -359,6 +385,7 @@ func (c *Controller) deleteObsoleteChains(allChains []string, chainIDs []ChainID
 			err = c.deleteChain(chainID)
 			if err != nil {
 				glog.Errorf("couldn't delete obsolete chain `%s` for lb `%s`, see: %v", chainID.String(), chainID.AsLoadbalancerKey(), err)
+				c.countError()
 				continue
 			}
 
@@ -383,6 +410,7 @@ func (c *Controller) deleteObsoleteMainChainEntries(allChains []string, chainIDs
 	rules, err := c.ipt.List(NATTable, c.mainChainName)
 	if err != nil {
 		glog.Errorf("couldn't retrieve rules in mainChain `%s`, see: %v", c.mainChainName, err)
+		c.countError()
 		return
 	}
 
@@ -396,6 +424,7 @@ func (c *Controller) deleteObsoleteMainChainEntries(allChains []string, chainIDs
 		chainID, err := c.getChainIDForMainChainRule(rule)
 		if err != nil {
 			glog.Errorf("couldn't get chainid for mainchain rule `%s`, see: %v", rule, err)
+			c.countError()
 			continue
 		}
 
@@ -410,6 +439,7 @@ func (c *Controller) deleteObsoleteMainChainEntries(allChains []string, chainIDs
 				err = c.removeMainChainEntryToChain(chain)
 				if err != nil {
 					glog.Errorf("couldn't remove main chain entry referencing chain `%s` for deleted lb `%s`, see: %v", chain.String(), lbKey, err)
+					c.countError()
 					continue
 				}
 
@@ -437,6 +467,7 @@ func (c *Controller) deleteObsoleteMainChainEntries(allChains []string, chainIDs
 				err = c.removeMainChainEntryToChain(chain)
 				if err != nil {
 					glog.Errorf("couldn't remove outdated main chain entry referencing chain `%s` for lb `%s`, see: %v", chain.String(), lbKey, err)
+					c.countError()
 					continue
 				}
 
@@ -712,6 +743,7 @@ func (c *Controller) deleteChainsStuckInCreation(allChains []string, chainIDs []
 			err := c.deleteChain(chainID)
 			if err != nil {
 				glog.Errorf("couldn't cleanup chain stuck in creation, see: %v", err)
+				c.countError()
 			}
 		}
 	}
@@ -732,6 +764,7 @@ func (c *Controller) ensureMainChainExists(allChains []string, chainIDs []ChainI
 		err := c.ipt.NewChain(NATTable, c.mainChainName)
 		if err != nil {
 			glog.Errorf("couldn't create mainchain, see: %v", err)
+			c.countError()
 			return
 		}
 		glog.V(4).Infof("created mainchain")
@@ -742,6 +775,7 @@ func (c *Controller) ensureForwardChainExists(allChains []string, chainIDs []Cha
 	allChains, err := c.ipt.ListChains(FilterTable)
 	if err != nil {
 		glog.Errorf("couldn't list all chains in filter table, see: %v", err)
+		c.countError()
 		return
 	}
 
@@ -759,6 +793,7 @@ func (c *Controller) ensureForwardChainExists(allChains []string, chainIDs []Cha
 		err := c.ipt.NewChain(FilterTable, c.forwardChainName)
 		if err != nil {
 			glog.Errorf("couldn't create forwardChain, see: %v", err)
+			c.countError()
 			return
 		}
 		glog.V(4).Infof("created forwardChain")
@@ -780,6 +815,7 @@ func (c *Controller) ensureForwardChainEntries(allChains []string, chainIDs []Ch
 	rules, err := c.ipt.List(FilterTable, c.forwardChainName)
 	if err != nil {
 		glog.Errorf("couldn't retrieve rules in forwardChain `%s`, see: %v", c.forwardChainName, err)
+		c.countError()
 		return
 	}
 
@@ -790,6 +826,7 @@ func (c *Controller) ensureForwardChainEntries(allChains []string, chainIDs []Ch
 				err = c.ipt.Append(FilterTable, c.forwardChainName, strings.Split(srcRule, " ")...)
 				if err != nil {
 					glog.Errorf("couldn't create source forward rule for output `%s` of lb `%s`, see: %v", output.String(), lbKey, err)
+					c.countError()
 				} else {
 					glog.Infof("added source forward rule for output `%s` of lb `%s`", output.String(), lbKey)
 				}
@@ -800,6 +837,7 @@ func (c *Controller) ensureForwardChainEntries(allChains []string, chainIDs []Ch
 				err = c.ipt.Append(FilterTable, c.forwardChainName, strings.Split(dstRule, " ")...)
 				if err != nil {
 					glog.Errorf("couldn't create destination forward rule for output `%s` of lb `%s`, see: %v", output.String(), lbKey, err)
+					c.countError()
 				} else {
 					glog.V(4).Infof("added destination forward rule for output `%s` of lb `%s`", output.String(), lbKey)
 				}
@@ -813,6 +851,7 @@ func (c *Controller) deleteObsoleteForwardChainEntries(allChains []string, chain
 	forwardRules, err := c.ipt.List(FilterTable, c.forwardChainName)
 	if err != nil {
 		glog.Errorf("couldn't retrieve rules in forwardChain `%s`, see: %v", c.forwardChainName, err)
+		c.countError()
 		return
 	}
 
@@ -822,6 +861,7 @@ func (c *Controller) deleteObsoleteForwardChainEntries(allChains []string, chain
 		rulesInChain, err := c.ipt.List(NATTable, chainID.String())
 		if err != nil {
 			glog.Errorf("WILL NOT DELETE ANY OBSOLETE FORWARD CHAIN ENTRIES, see: couldn't retrieve rules in chain `%s`, see: %v", chainID.String(), err)
+			c.countError()
 			return
 		}
 
@@ -833,6 +873,7 @@ func (c *Controller) deleteObsoleteForwardChainEntries(allChains []string, chain
 			dest, err := c.getDestinationFromRule(rule)
 			if err != nil {
 				glog.Errorf("WILL NOT DELETE ANY OBSOLETE FORWARD CHAIN ENTRIES, see: couldn't find endpoint in rule `%s`, see: %v", rule, err)
+				c.countError()
 				return
 			}
 
@@ -851,6 +892,7 @@ func (c *Controller) deleteObsoleteForwardChainEntries(allChains []string, chain
 		dest, err := c.getDestinationFromForwardRule(rule)
 		if err != nil {
 			glog.Errorf("can't delete potential obsolete forward chain entry, see: couldn't get destination from forward rule `%s`, see: %v", rule, err)
+			c.countError()
 			continue
 		}
 
@@ -862,6 +904,7 @@ func (c *Controller) deleteObsoleteForwardChainEntries(allChains []string, chain
 			err := c.ipt.Delete(FilterTable, c.forwardChainName, strings.Split(rule, " ")...)
 			if err != nil {
 				glog.Errorf("couldn't delete obsolete forward rule `%s`, see: %v", rule, err)
+				c.countError()
 				continue
 			}
 

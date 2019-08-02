@@ -7,7 +7,7 @@ import (
 )
 
 func TestMainChainCreation(t *testing.T) {
-	ctrl, err := NewController(1)
+	ctrl, err := NewController(1, nil)
 	if err != nil {
 		t.Fatalf("Controller couldn't start, see: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestLBWithMultipleOutputsAdded(t *testing.T) {
 	output2, _ := TryParseEndpoint("10.100.0.2:1002")
 	output3, _ := TryParseEndpoint("10.100.0.3:1003")
 
-	ctrl, err := NewController(1)
+	ctrl, err := NewController(1, nil)
 	if err != nil {
 		t.Fatalf("Controller couldn't start, see: %v", err)
 	}
@@ -105,7 +105,7 @@ Chain iptableslb-prerouting (0 references)
 }
 
 func TestDeleteUnknownLB(t *testing.T) {
-	ctrl, err := NewController(1)
+	ctrl, err := NewController(1, nil)
 	if err != nil {
 		t.Fatalf("Controller couldn't start, see: %v", err)
 	}
@@ -139,7 +139,7 @@ Chain iptableslb-prerouting (0 references)
 		t.Fatalf("BEFORE expected `%s` got `%s`", expectedBefore, actualBefore)
 	}
 
-	ctrl, err = NewController(1)
+	ctrl, err = NewController(1, nil)
 	if err != nil {
 		t.Fatalf("Controller couldn't start, see: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestLBWithSingleOutputsAndExplicitDelete(t *testing.T) {
 	input, _ := TryParseEndpoint("10.50.1.1:1234")
 	output1, _ := TryParseEndpoint("10.100.0.1:1001")
 
-	ctrl, err := NewController(1)
+	ctrl, err := NewController(1, nil)
 	if err != nil {
 		t.Fatalf("Controller couldn't start, see: %v", err)
 	}
@@ -251,7 +251,7 @@ Chain iptableslb-prerouting (0 references)
 }
 
 func TestMultipleLBs(t *testing.T) {
-	ctrl, err := NewController(1)
+	ctrl, err := NewController(1, nil)
 	if err != nil {
 		t.Fatalf("Controller couldn't start, see: %v", err)
 	}
@@ -411,7 +411,7 @@ func TestRemoveSingleEndpointFromLB(t *testing.T) {
 	output2, _ := TryParseEndpoint("10.100.0.2:1002")
 	output3, _ := TryParseEndpoint("10.100.0.3:1003")
 
-	ctrl, err := NewController(1)
+	ctrl, err := NewController(1, nil)
 	if err != nil {
 		t.Fatalf("Controller couldn't start, see: %v", err)
 	}
