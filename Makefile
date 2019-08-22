@@ -1,6 +1,6 @@
 export GOOS=linux
 IMAGE=kavatech/iptableslb
-TAG=0.1.0
+TAG=0.1.1
 
 all: build
 
