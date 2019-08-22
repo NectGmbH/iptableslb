@@ -7,7 +7,7 @@ import (
 )
 
 func TestMainChainCreation(t *testing.T) {
-	ctrl, err := NewController(1, nil)
+	ctrl, err := NewController(1, nil, "")
 	if err != nil {
 		t.Fatalf("Controller couldn't start, see: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestLBWithMultipleOutputsAdded(t *testing.T) {
 	output2, _ := TryParseEndpoint("10.100.0.2:1002")
 	output3, _ := TryParseEndpoint("10.100.0.3:1003")
 
-	ctrl, err := NewController(1, nil)
+	ctrl, err := NewController(1, nil, "")
 	if err != nil {
 		t.Fatalf("Controller couldn't start, see: %v", err)
 	}
@@ -105,7 +105,7 @@ Chain iptableslb-prerouting (0 references)
 }
 
 func TestDeleteUnknownLB(t *testing.T) {
-	ctrl, err := NewController(1, nil)
+	ctrl, err := NewController(1, nil, "")
 	if err != nil {
 		t.Fatalf("Controller couldn't start, see: %v", err)
 	}
@@ -139,7 +139,7 @@ Chain iptableslb-prerouting (0 references)
 		t.Fatalf("BEFORE expected `%s` got `%s`", expectedBefore, actualBefore)
 	}
 
-	ctrl, err = NewController(1, nil)
+	ctrl, err = NewController(1, nil, "")
 	if err != nil {
 		t.Fatalf("Controller couldn't start, see: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestLBWithSingleOutputsAndExplicitDelete(t *testing.T) {
 	input, _ := TryParseEndpoint("10.50.1.1:1234")
 	output1, _ := TryParseEndpoint("10.100.0.1:1001")
 
-	ctrl, err := NewController(1, nil)
+	ctrl, err := NewController(1, nil, "")
 	if err != nil {
 		t.Fatalf("Controller couldn't start, see: %v", err)
 	}
@@ -251,7 +251,7 @@ Chain iptableslb-prerouting (0 references)
 }
 
 func TestMultipleLBs(t *testing.T) {
-	ctrl, err := NewController(1, nil)
+	ctrl, err := NewController(1, nil, "")
 	if err != nil {
 		t.Fatalf("Controller couldn't start, see: %v", err)
 	}
@@ -411,7 +411,7 @@ func TestRemoveSingleEndpointFromLB(t *testing.T) {
 	output2, _ := TryParseEndpoint("10.100.0.2:1002")
 	output3, _ := TryParseEndpoint("10.100.0.3:1003")
 
-	ctrl, err := NewController(1, nil)
+	ctrl, err := NewController(1, nil, "")
 	if err != nil {
 		t.Fatalf("Controller couldn't start, see: %v", err)
 	}
@@ -501,6 +501,127 @@ Chain OUTPUT (policy ACCEPT 0 packets, 0 bytes)
  pkts bytes target     prot opt in     out     source               destination         
 
 Chain POSTROUTING (policy ACCEPT 0 packets, 0 bytes)
+ pkts bytes target     prot opt in     out     source               destination         
+
+Chain iptableslb-prerouting (0 references)
+ pkts bytes target     prot opt in     out     source               destination`
+
+	actual = iptablesLNVTNAT(t)
+
+	if strings.TrimSpace(expected) != strings.TrimSpace(actual) {
+		t.Fatalf("AFTER DELETE SCND expected `%s` got `%s`", expected, actual)
+	}
+}
+
+func TestHairpinningUpAndDown(t *testing.T) {
+	input, _ := TryParseEndpoint("10.50.1.1:1234")
+	output1, _ := TryParseEndpoint("10.100.0.1:1001")
+	output2, _ := TryParseEndpoint("10.100.0.2:1002")
+	output3, _ := TryParseEndpoint("10.100.0.3:1003")
+
+	ctrl, err := NewController(1, nil, "42.42.42.0/24")
+	if err != nil {
+		t.Fatalf("Controller couldn't start, see: %v", err)
+	}
+
+	// dont use upsert since it changes the LastUpdate date and we can't compare chain names anymore
+	lb := NewLoadbalancer(ProtocolTCP, input, output1, output2, output3)
+	lb.LastUpdate = uint32(12345)
+	ctrl.loadbalancers[lb.Key()] = *lb
+
+	ctrl.sync()
+
+	expected := `
+Chain PREROUTING (policy ACCEPT 0 packets, 0 bytes)
+ pkts bytes target     prot opt in     out     source               destination         
+
+Chain INPUT (policy ACCEPT 0 packets, 0 bytes)
+ pkts bytes target     prot opt in     out     source               destination         
+
+Chain OUTPUT (policy ACCEPT 0 packets, 0 bytes)
+ pkts bytes target     prot opt in     out     source               destination         
+
+Chain POSTROUTING (policy ACCEPT 0 packets, 0 bytes)
+ pkts bytes target     prot opt in     out     source               destination         
+
+Chain LB$-CgEKMgEBBNIAADA5AfMq03E= (1 references)
+ pkts bytes target     prot opt in     out     source               destination         
+    0     0 DNAT       tcp  --  *      *       0.0.0.0/0            10.50.1.1            tcp dpt:1234 statistic mode nth every 3 to:10.100.0.3:1003
+    0     0 DNAT       tcp  --  *      *       0.0.0.0/0            10.50.1.1            tcp dpt:1234 statistic mode nth every 2 to:10.100.0.2:1002
+    0     0 DNAT       tcp  --  *      *       0.0.0.0/0            10.50.1.1            tcp dpt:1234 to:10.100.0.1:1001
+
+Chain iptables-hairpinning (0 references)
+ pkts bytes target     prot opt in     out     source               destination         
+    0     0 MASQUERADE  tcp  --  *      *       42.42.42.0/24        10.100.0.1           tcp dpt:1001
+    0     0 MASQUERADE  tcp  --  *      *       42.42.42.0/24        10.100.0.2           tcp dpt:1002
+    0     0 MASQUERADE  tcp  --  *      *       42.42.42.0/24        10.100.0.3           tcp dpt:1003
+
+Chain iptableslb-prerouting (0 references)
+ pkts bytes target     prot opt in     out     source               destination         
+    0     0 LB$-CgEKMgEBBNIAADA5AfMq03E=  tcp  --  *      *       0.0.0.0/0            10.50.1.1            tcp dpt:1234`
+	actual := iptablesLNVTNAT(t)
+
+	if strings.TrimSpace(expected) != strings.TrimSpace(actual) {
+		t.Fatalf("expected `%s` got `%s`", expected, actual)
+	}
+
+	lb = NewLoadbalancer(ProtocolTCP, input, output1, output3)
+	lb.LastUpdate = uint32(45678)
+	ctrl.loadbalancers[lb.Key()] = *lb
+
+	ctrl.sync()
+
+	expected = `
+Chain PREROUTING (policy ACCEPT 0 packets, 0 bytes)
+ pkts bytes target     prot opt in     out     source               destination         
+
+Chain INPUT (policy ACCEPT 0 packets, 0 bytes)
+ pkts bytes target     prot opt in     out     source               destination         
+
+Chain OUTPUT (policy ACCEPT 0 packets, 0 bytes)
+ pkts bytes target     prot opt in     out     source               destination         
+
+Chain POSTROUTING (policy ACCEPT 0 packets, 0 bytes)
+ pkts bytes target     prot opt in     out     source               destination         
+
+Chain LB$-CgEKMgEBBNIAALJuAaZZdWA= (1 references)
+ pkts bytes target     prot opt in     out     source               destination         
+    0     0 DNAT       tcp  --  *      *       0.0.0.0/0            10.50.1.1            tcp dpt:1234 statistic mode nth every 2 to:10.100.0.3:1003
+    0     0 DNAT       tcp  --  *      *       0.0.0.0/0            10.50.1.1            tcp dpt:1234 to:10.100.0.1:1001
+
+Chain iptables-hairpinning (0 references)
+ pkts bytes target     prot opt in     out     source               destination         
+    0     0 MASQUERADE  tcp  --  *      *       42.42.42.0/24        10.100.0.1           tcp dpt:1001
+    0     0 MASQUERADE  tcp  --  *      *       42.42.42.0/24        10.100.0.3           tcp dpt:1003
+
+Chain iptableslb-prerouting (0 references)
+ pkts bytes target     prot opt in     out     source               destination         
+    0     0 LB$-CgEKMgEBBNIAALJuAaZZdWA=  tcp  --  *      *       0.0.0.0/0            10.50.1.1            tcp dpt:1234`
+
+	actual = iptablesLNVTNAT(t)
+
+	if strings.TrimSpace(expected) != strings.TrimSpace(actual) {
+		t.Fatalf("expected `%s` got `%s`", expected, actual)
+	}
+
+	// Remove second and expect cleanup
+	ctrl.DeleteLoadbalancer(lb)
+	ctrl.sync()
+
+	expected = `
+Chain PREROUTING (policy ACCEPT 0 packets, 0 bytes)
+ pkts bytes target     prot opt in     out     source               destination         
+
+Chain INPUT (policy ACCEPT 0 packets, 0 bytes)
+ pkts bytes target     prot opt in     out     source               destination         
+
+Chain OUTPUT (policy ACCEPT 0 packets, 0 bytes)
+ pkts bytes target     prot opt in     out     source               destination         
+
+Chain POSTROUTING (policy ACCEPT 0 packets, 0 bytes)
+ pkts bytes target     prot opt in     out     source               destination         
+
+Chain iptables-hairpinning (0 references)
  pkts bytes target     prot opt in     out     source               destination         
 
 Chain iptableslb-prerouting (0 references)

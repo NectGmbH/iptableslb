@@ -27,31 +27,35 @@ const FilterTable = "filter"
 // Controller is a controller which monitors iptables and loadbalancers and updates iptables accordingly.
 type Controller struct {
 	sync.Mutex
-	loadbalancers    map[string]Loadbalancer
-	started          bool
-	stopCh           chan struct{}
-	ipt              *iptables.IPTables
-	mainChainName    string
-	forwardChainName string
-	tickRate         int
-	metrics          *Metrics
+	loadbalancers        map[string]Loadbalancer
+	started              bool
+	stopCh               chan struct{}
+	ipt                  *iptables.IPTables
+	mainChainName        string
+	forwardChainName     string
+	hairpinningChainName string
+	hairpinningCIDR      string
+	tickRate             int
+	metrics              *Metrics
 }
 
 // NewController creates a new Controller instance.
-func NewController(tickRate int, metrics *Metrics) (*Controller, error) {
+func NewController(tickRate int, metrics *Metrics, hairpinningCIDR string) (*Controller, error) {
 	ipt, err := iptables.New()
 	if err != nil {
 		return nil, fmt.Errorf("couldn't init iptables, see: %v", err)
 	}
 
 	return &Controller{
-		loadbalancers:    make(map[string]Loadbalancer),
-		ipt:              ipt,
-		stopCh:           make(chan struct{}),
-		mainChainName:    "iptableslb-prerouting",
-		forwardChainName: "iptableslb-forward",
-		tickRate:         tickRate,
-		metrics:          metrics,
+		loadbalancers:        make(map[string]Loadbalancer),
+		ipt:                  ipt,
+		stopCh:               make(chan struct{}),
+		mainChainName:        "iptableslb-prerouting",
+		forwardChainName:     "iptableslb-forward",
+		hairpinningChainName: "iptables-hairpinning",
+		hairpinningCIDR:      hairpinningCIDR,
+		tickRate:             tickRate,
+		metrics:              metrics,
 	}, nil
 }
 
@@ -163,10 +167,13 @@ func (c *Controller) sync() {
 		c.ensureForwardChainEntries,
 		c.ensureMainChainExists,
 		c.ensureChains,
+		c.ensureHairpinningChainExists,
 		c.ensureMainChainEntries,
+		c.ensureHairpinningChainEntries,
 		c.deleteObsoleteMainChainEntries,
 		c.deleteObsoleteChains,
 		c.deleteObsoleteForwardChainEntries,
+		c.deleteObsoleteHairpinningChainEntries,
 	}
 
 	// Always get data from iptables to avoid running into mismatches between our state and iptables state
@@ -286,6 +293,82 @@ func (c *Controller) getLatestChainID(chainIDs []ChainID) ChainID {
 	return latest
 }
 
+func (c *Controller) ensureHairpinningChainEntries(allChains []string, chainIDs []ChainID, lbToChains map[string][]ChainID) {
+	if c.hairpinningCIDR == "" {
+		glog.V(5).Infof("skipping ensuring hairpinning chain entries since no cidr is configured")
+		return
+	}
+
+	rules, err := c.ipt.List(NATTable, c.hairpinningChainName)
+	if err != nil {
+		glog.Errorf("couldn't retrieve rules in hairpinningChain `%s`, see: %v", c.hairpinningChainName, err)
+		return
+	}
+
+	for lbKey, lb := range c.loadbalancers {
+		for _, ep := range lb.Outputs {
+			wantedRule := c.getHairpinningRuleForEndpoint(ep, lb.Protocol)
+
+			if c.rulesContainRule(rules, wantedRule) {
+				glog.V(5).Infof("skipping creation of hairpinning chain entry for ep `%s` of lb `%s` since it already exists", ep.String(), lbKey)
+				continue
+			}
+
+			err = c.ipt.Append(NATTable, c.hairpinningChainName, strings.Split(wantedRule, " ")...)
+			if err != nil {
+				glog.Errorf("couldn't create hairpinning chain entry for lb `%s` to endpoint `%s`, see: %v", lbKey, ep.String(), err)
+				c.countError()
+				continue
+			}
+
+			glog.Infof("added hairpinning chain entry for lb `%s` to endpoint `%s`", lbKey, ep.String())
+		}
+	}
+}
+
+func (c *Controller) deleteObsoleteHairpinningChainEntries(allChains []string, chainIDs []ChainID, lbToChains map[string][]ChainID) {
+	if c.hairpinningCIDR == "" {
+		glog.V(5).Infof("skipping deletion of obsolete hairpinning chain entries since no cidr is configured")
+		return
+	}
+
+	rules, err := c.ipt.List(NATTable, c.hairpinningChainName)
+	if err != nil {
+		glog.Errorf("couldn't retrieve rules in hairpinningChain `%s`, see: %v", c.hairpinningChainName, err)
+		return
+	}
+
+	wantedRules := make([]string, 0)
+
+	for _, lb := range c.loadbalancers {
+		for _, ep := range lb.Outputs {
+			wantedRule := c.getHairpinningRuleForEndpoint(ep, lb.Protocol)
+			wantedRules = append(wantedRules, wantedRule)
+		}
+	}
+
+	for _, rule := range rules {
+		rule = c.stripNARules(rule)
+
+		if rule == "" {
+			// e.g. -N or -A rule
+			continue
+		}
+
+		if c.rulesContainRule(wantedRules, rule) {
+			glog.V(5).Infof("Not deleting hairpinning rule `%s` since it's a wanted rule", rule)
+			continue
+		}
+
+		err := c.ipt.Delete(NATTable, c.hairpinningChainName, strings.Split(rule, " ")...)
+		if err != nil {
+			glog.Errorf("couldn't delete obsolete hairpinning rule `%s`, see: %v", rule, err)
+		} else {
+			glog.Infof("deleted obsolete hairpinning rule `%s`", rule)
+		}
+	}
+}
+
 func (c *Controller) ensureMainChainEntries(allChains []string, chainIDs []ChainID, lbToChains map[string][]ChainID) {
 	// For every chain, check if a corresponding entry in the main chain exists, if not, create
 	rules, err := c.ipt.List(NATTable, c.mainChainName)
@@ -332,7 +415,8 @@ func (c *Controller) rulesContainRule(rules []string, rule string) bool {
 
 	for i := 0; i < len(splittedRule); i++ {
 		if i%2 == 1 {
-			tuples = append(tuples, splittedRule[i-1]+" "+splittedRule[i])
+			tuple := splittedRule[i-1] + " " + splittedRule[i]
+			tuples = append(tuples, tuple)
 		}
 	}
 
@@ -667,6 +751,10 @@ func (c *Controller) createChainForLB(lb *Loadbalancer) (ChainID, error) {
 	return newChainID, nil
 }
 
+func (c *Controller) getHairpinningRuleForEndpoint(ep Endpoint, prot Protocol) string {
+	return fmt.Sprintf("-p %s -m %s -s %s -d %s/32 --dport %d -j MASQUERADE", prot.String(), prot.String(), c.hairpinningCIDR, ep.IP.String(), ep.Port)
+}
+
 func (c *Controller) getRuleStringForMainChainEntryToChain(chain ChainID) string {
 	return fmt.Sprintf("-p %s -d %s --dport %d -j %s", chain.Protocol.String(), chain.IP.String(), chain.Port, chain.String())
 }
@@ -768,6 +856,40 @@ func (c *Controller) ensureMainChainExists(allChains []string, chainIDs []ChainI
 			return
 		}
 		glog.V(4).Infof("created mainchain")
+	}
+}
+
+func (c *Controller) ensureHairpinningChainExists(allChains []string, chainIDs []ChainID, lbToChains map[string][]ChainID) {
+	if c.hairpinningCIDR == "" {
+		glog.V(5).Infof("skipping ensuring hairpinning chain since no cidr is configured")
+		return
+	}
+
+	allChains, err := c.ipt.ListChains(NATTable)
+	if err != nil {
+		glog.Errorf("couldn't list all chains in nat table, see: %v", err)
+		c.countError()
+		return
+	}
+
+	found := false
+	for _, chain := range allChains {
+		if chain == c.hairpinningChainName {
+			found = true
+			glog.V(4).Infof("skipping creation of hairpinning chain since it already exists")
+			return
+		}
+	}
+
+	if !found {
+		glog.V(4).Infof("creating hairpinning chain...")
+		err := c.ipt.NewChain(NATTable, c.hairpinningChainName)
+		if err != nil {
+			glog.Errorf("couldn't create hairpinning chain, see: %v", err)
+			c.countError()
+			return
+		}
+		glog.V(4).Infof("created hairpinning chain")
 	}
 }
 

@@ -15,7 +15,7 @@ docker-push:
 	docker push $(IMAGE):$(TAG)
 
 tests: docker-build
-	docker run --privileged --entrypoint /usr/bin/iptableslb.test -it $(IMAGE):$(TAG) -test.failfast -test.v #-v 4 -alsologtostderr
+	docker run --privileged --entrypoint /usr/bin/iptableslb.test -it $(IMAGE):$(TAG) -test.failfast -test.v #-v 5 -alsologtostderr
 
 sh: docker-build
 	docker run --privileged --entrypoint /bin/bash -it $(IMAGE):$(TAG)

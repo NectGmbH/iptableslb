@@ -108,9 +108,11 @@ func main() {
 	var inFlags sliceFlags
 	var outFlags sliceFlags
 	var healthFlags sliceFlags
+	var hairpinningCIDR string
 	var metricsPort int
 	var tickRate int
 
+	flag.StringVar(&hairpinningCIDR, "hairpinning-cidr", "", "the nat internal CIDR. if empty, no hairpinning will be set up.")
 	flag.IntVar(&metricsPort, "p", 9080, "port to listen on for metrics endpoint")
 	flag.IntVar(&tickRate, "t", 1, "Tick rate for the controller in seconds.")
 	flag.Var(&inFlags, "in", "Input for the lb, e.g. \"tcp://192.168.0.1:80\"")
@@ -134,7 +136,7 @@ func main() {
 
 	metrics.LBTotal.Add(float64(len(inFlags)))
 
-	ctrl, err := NewController(tickRate, metrics)
+	ctrl, err := NewController(tickRate, metrics, hairpinningCIDR)
 	if err != nil {
 		glog.Fatalf("Controller couldn't start, see: %v", err)
 	}
