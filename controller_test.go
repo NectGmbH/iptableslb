@@ -550,7 +550,7 @@ Chain LB$-CgEKMgEBBNIAADA5AfMq03E= (1 references)
     0     0 DNAT       tcp  --  *      *       0.0.0.0/0            10.50.1.1            tcp dpt:1234 statistic mode nth every 2 to:10.100.0.2:1002
     0     0 DNAT       tcp  --  *      *       0.0.0.0/0            10.50.1.1            tcp dpt:1234 to:10.100.0.1:1001
 
-Chain iptables-hairpinning (0 references)
+Chain iptableslb-hairpinning (0 references)
  pkts bytes target     prot opt in     out     source               destination         
     0     0 MASQUERADE  tcp  --  *      *       42.42.42.0/24        10.100.0.1           tcp dpt:1001
     0     0 MASQUERADE  tcp  --  *      *       42.42.42.0/24        10.100.0.2           tcp dpt:1002
@@ -589,7 +589,7 @@ Chain LB$-CgEKMgEBBNIAALJuAaZZdWA= (1 references)
     0     0 DNAT       tcp  --  *      *       0.0.0.0/0            10.50.1.1            tcp dpt:1234 statistic mode nth every 2 to:10.100.0.3:1003
     0     0 DNAT       tcp  --  *      *       0.0.0.0/0            10.50.1.1            tcp dpt:1234 to:10.100.0.1:1001
 
-Chain iptables-hairpinning (0 references)
+Chain iptableslb-hairpinning (0 references)
  pkts bytes target     prot opt in     out     source               destination         
     0     0 MASQUERADE  tcp  --  *      *       42.42.42.0/24        10.100.0.1           tcp dpt:1001
     0     0 MASQUERADE  tcp  --  *      *       42.42.42.0/24        10.100.0.3           tcp dpt:1003
@@ -621,7 +621,7 @@ Chain OUTPUT (policy ACCEPT 0 packets, 0 bytes)
 Chain POSTROUTING (policy ACCEPT 0 packets, 0 bytes)
  pkts bytes target     prot opt in     out     source               destination         
 
-Chain iptables-hairpinning (0 references)
+Chain iptableslb-hairpinning (0 references)
  pkts bytes target     prot opt in     out     source               destination         
 
 Chain iptableslb-prerouting (0 references)

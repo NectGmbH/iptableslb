@@ -52,7 +52,7 @@ func NewController(tickRate int, metrics *Metrics, hairpinningCIDR string) (*Con
 		stopCh:               make(chan struct{}),
 		mainChainName:        "iptableslb-prerouting",
 		forwardChainName:     "iptableslb-forward",
-		hairpinningChainName: "iptables-hairpinning",
+		hairpinningChainName: "iptableslb-hairpinning",
 		hairpinningCIDR:      hairpinningCIDR,
 		tickRate:             tickRate,
 		metrics:              metrics,
