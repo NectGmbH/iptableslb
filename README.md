@@ -14,6 +14,6 @@ and also one for the NAT prerouting:
 
 and if nat hairpinning is wanted, also postrouting:
 
-`iptables -t nat -A PREROUTING -j iptableslb-hairpinning`
+`iptables -t nat -A POSTROUTING -j iptableslb-hairpinning`
 
 make sure those rules are appended after your firewall configs and before your "Drop everything else"-Rules
